@@ -318,11 +318,67 @@
         Settings.ConnectionString = Settings.ConnectionString.Replace(DataDirectory, dataFilePath);
     }
 
-    public DTE GetDTE()
+    public new void WriteLine(string format, params object[] args)
     {
-        var serviceProvider = (IServiceProvider)Host;
-        if(serviceProvider == null)
+        WriteLine(string.Format(CultureInfo.CurrentCulture, format, args));
+    }
+
+    public new void WriteLine(string message)
+    {
+        LogToOutput(message);
+        base.WriteLine(message);
+    }
+	
+    public new void Warning(string message)
+    {
+        LogToOutput(string.Format(CultureInfo.CurrentCulture, "Warning: {0}", message));
+        base.Warning(message);
+    }
+    public new void Error(string message)
+    {
+        LogToOutput(string.Format(CultureInfo.CurrentCulture, "Error: {0}", message));
+        base.Error(message);
+    }
+    private object GetCOMService(IServiceProvider provider, Type type)
+    {
+        object result = provider.GetService(type);
+        if (result == null)
+        {
+            return result;
+        }
+        try
+        {
+            return System.Runtime.InteropServices.Marshal.GetObjectForIUnknown(
+                System.Runtime.InteropServices.Marshal.GetIUnknownForObject(result));
+        }
+        catch (Exception)
+        {
+            return result;
+        }
+    }
+
+    private void LogToOutput(string message)
+    {
+        var serviceProvider = GetServiceProvider();
+        var dte = (DTE)GetCOMService(serviceProvider, typeof(DTE));
+        var window = dte.Windows.Item(Constants.vsWindowKindOutput);
+        var outputWindow = (OutputWindow) window.Object;
+        outputWindow.ActivePane.Activate();
+        outputWindow.ActivePane.OutputString(message);		
+        outputWindow.ActivePane.OutputString("\n");
+    }
+
+    private IServiceProvider GetServiceProvider()
+    {
+        var serviceProvider = (IServiceProvider) Host;
+        if (serviceProvider == null)
             throw new Exception("Host property returned unexpected value (null)");
+        return serviceProvider;
+    }
+
+    public DTE GetDTE()
+	{
+		var serviceProvider = GetServiceProvider();
 
         var dte = (DTE)serviceProvider.GetService(typeof(DTE));
         if(dte == null)
@@ -1278,7 +1334,9 @@
 
         public static bool IsNullable(DataColumn col)
         {
-            return col.AllowDBNull && !NotNullable.Contains(col.DataType.Name.ToLower());
+            return col.AllowDBNull &&
+                   !(NotNullable.Contains(col.DataType.Name.ToLower())
+                   || NotNullable.Contains(col.DataType.Namespace.ToLower() + "." + col.DataType.Name.ToLower()));
         }
 
         public static string WrapTypeIfNullable(string propertyType, DataColumn col) {
@@ -1814,33 +1872,48 @@ SELECT SchemaName, TableName, TableType, Ordinal, ColumnName, IsNullable, TypeNa
     [Default], DateTimePrecision, Scale, IsIdentity, IsStoreGenerated, PrimaryKey, PrimaryKeyOrdinal, IsForeignKey FROM #SynonymDetails";
 
             private const string ForeignKeySQL = @"
-SELECT  FK.name AS FK_Table,
-        FkCol.name AS FK_Column,
-        PK.name AS PK_Table,
-        PkCol.name AS PK_Column,
-        OBJECT_NAME(f.object_id) AS Constraint_Name,
-        SCHEMA_NAME(FK.schema_id) AS fkSchema,
-        SCHEMA_NAME(PK.schema_id) AS pkSchema,
-        PkCol.name AS primarykey,
-        k.constraint_column_id AS ORDINAL_POSITION,
-        CASE WHEN f.delete_referential_action = 1 THEN 1 ELSE 0 END as CascadeOnDelete,
-        f.is_disabled AS IsNotEnforced
-FROM    sys.objects AS PK
-        INNER JOIN sys.foreign_keys AS f
-            INNER JOIN sys.foreign_key_columns AS k
-                ON k.constraint_object_id = f.object_id
-            INNER JOIN sys.indexes AS i
-                ON f.referenced_object_id = i.object_id
-                   AND f.key_index_id = i.index_id
-            ON PK.object_id = f.referenced_object_id
-        INNER JOIN sys.objects AS FK
-            ON f.parent_object_id = FK.object_id
-        INNER JOIN sys.columns AS PkCol
-            ON f.referenced_object_id = PkCol.object_id
-               AND k.referenced_column_id = PkCol.column_id
-        INNER JOIN sys.columns AS FkCol
-            ON f.parent_object_id = FkCol.object_id
-               AND k.parent_column_id = FkCol.column_id";
+SELECT  fkData.FK_Table,
+        fkData.FK_Column,
+        fkData.PK_Table,
+        fkData.PK_Column,
+        fkData.Constraint_Name,
+        fkData.fkSchema,
+        fkData.pkSchema,
+        fkData.primarykey,
+        fkData.ORDINAL_POSITION,
+        fkData.CascadeOnDelete,
+        fkData.IsNotEnforced
+FROM    (SELECT FK.name AS FK_Table,
+                FkCol.name AS FK_Column,
+                PK.name AS PK_Table,
+                PkCol.name AS PK_Column,
+                OBJECT_NAME(f.object_id) AS Constraint_Name,
+                SCHEMA_NAME(FK.schema_id) AS fkSchema,
+                SCHEMA_NAME(PK.schema_id) AS pkSchema,
+                PkCol.name AS primarykey,
+                k.constraint_column_id AS ORDINAL_POSITION,
+                CASE WHEN f.delete_referential_action = 1 THEN 1
+                     ELSE 0
+                END AS CascadeOnDelete,
+                f.is_disabled AS IsNotEnforced,
+                ROW_NUMBER() OVER (PARTITION BY FK.name, FkCol.name, PK.name, PkCol.name, SCHEMA_NAME(FK.schema_id), SCHEMA_NAME(PK.schema_id) ORDER BY f.object_id) AS n
+         FROM   sys.objects AS PK
+                INNER JOIN sys.foreign_keys AS f
+                    INNER JOIN sys.foreign_key_columns AS k
+                        ON k.constraint_object_id = f.object_id
+                    INNER JOIN sys.indexes AS i
+                        ON f.referenced_object_id = i.object_id
+                           AND f.key_index_id = i.index_id
+                    ON PK.object_id = f.referenced_object_id
+                INNER JOIN sys.objects AS FK
+                    ON f.parent_object_id = FK.object_id
+                INNER JOIN sys.columns AS PkCol
+                    ON f.referenced_object_id = PkCol.object_id
+                       AND k.referenced_column_id = PkCol.column_id
+                INNER JOIN sys.columns AS FkCol
+                    ON f.parent_object_id = FkCol.object_id
+                       AND k.parent_column_id = FkCol.column_id) fkData
+WHERE   fkData.n = 1 -- Remove duplicate FK's";
 
             private const string SynonymForeignKeySQLSetup = @"
 SET NOCOUNT ON;
@@ -3537,7 +3610,7 @@ SELECT  SERVERPROPERTY('Edition') AS Edition,
 
         public string GetUniqueColumnName(string tableNameHumanCase, ForeignKey foreignKey, bool checkForFkNameClashes, bool makeSingular, Relationship relationship)
         {
-            var addReverseNavigationUniquePropName = (Name == foreignKey.FkTableName || (Name == foreignKey.PkTableName && foreignKey.IncludeReverseNavigation));
+            var addReverseNavigationUniquePropName = (checkForFkNameClashes || Name == foreignKey.FkTableName || (Name == foreignKey.PkTableName && foreignKey.IncludeReverseNavigation));
             if (ReverseNavigationUniquePropName.Count == 0)
             {
                 ReverseNavigationUniquePropName.Add(NameHumanCase);
@@ -3887,16 +3960,23 @@ SELECT  SERVERPROPERTY('Edition') AS Edition,
         {
             var isNullable = !NotNullable.Contains(p.PropertyType.ToLower());
             var getValueOrDefault = isNullable ? ".GetValueOrDefault()" : string.Empty;
+            var isGeography = p.PropertyType == "System.Data.Entity.Spatial.DbGeography";
 
-            sb.AppendLine(string.Format("            var {0} = new System.Data.SqlClient.SqlParameter {{ ParameterName = \"{1}\", SqlDbType = System.Data.SqlDbType.{2}, Direction = System.Data.ParameterDirection.{3}{4}{5}{6}{7} }};",
-                WriteStoredProcSqlParameterName(p),
-                p.Name,
-                p.SqlDbType,
-                p.Mode == StoredProcedureParameterMode.In ? "Input" : "Output",
-                p.Mode == StoredProcedureParameterMode.In ? ", Value = " + p.NameHumanCase + getValueOrDefault : string.Empty,
-                p.MaxLength != 0 ? ", Size = " + p.MaxLength : string.Empty,
-                (p.Precision > 0 || p.Scale > 0) ? ", Precision = " + p.Precision + ", Scale = " + p.Scale : string.Empty,
-                p.PropertyType.ToLower().Contains("datatable") ? ", TypeName = \"" + p.UserDefinedTypeName + "\"" : string.Empty));
+            sb.AppendLine(
+                $"            var {WriteStoredProcSqlParameterName(p)} = new System.Data.SqlClient.SqlParameter"
+                + $" {{ ParameterName = \"{p.Name}\", "
+                + (isGeography ? "UdtTypeName = \"geography\"" : $"SqlDbType = System.Data.SqlDbType.{p.SqlDbType}")
+                + ", Direction = System.Data.ParameterDirection."
+                + (p.Mode == StoredProcedureParameterMode.In ? "Input" : "Output")
+                + (p.Mode == StoredProcedureParameterMode.In
+                    ? ", Value = " + (isGeography
+                        ? $"Microsoft.SqlServer.Types.SqlGeography.Parse({p.NameHumanCase}.AsText())"
+                        : p.NameHumanCase + getValueOrDefault)
+                    : string.Empty)
+                + (p.MaxLength != 0 ? ", Size = " + p.MaxLength : string.Empty)
+                + ((p.Precision > 0 || p.Scale > 0) ? ", Precision = " + p.Precision + ", Scale = " + p.Scale : string.Empty)
+                + (p.PropertyType.ToLower().Contains("datatable") ? ", TypeName = \"" + p.UserDefinedTypeName + "\"" : string.Empty)
+                + " };");
 
                 if (p.Mode == StoredProcedureParameterMode.In)
                 {
@@ -3999,7 +4079,7 @@ SELECT  SERVERPROPERTY('Edition') AS Edition,
 
         return string.Format("public {0} {1} {{ get; set; }}",
             StoredProcedure.WrapTypeIfNullable(
-                (col.DataType.Name.Equals("SqlHierarchyId") ? "Microsoft.SqlServer.Types." : "System.") +
+                (col.DataType.Name.Equals("SqlHierarchyId") ? "Microsoft.SqlServer.Types." : col.DataType.Namespace + ".") +
                 col.DataType.Name, col),
             columnName);
     };
