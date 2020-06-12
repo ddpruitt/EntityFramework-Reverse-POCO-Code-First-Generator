@@ -14,6 +14,7 @@ namespace Efrpg.Filtering
         protected readonly List<IFilterType<Table>>           TableFilters;
         protected readonly List<IFilterType<Column>>          ColumnFilters;
         protected readonly List<IFilterType<StoredProcedure>> StoredProcedureFilters;
+        private bool _hasMergedIncludeFilters;
 
         public SingleContextFilter()
         {
@@ -23,10 +24,11 @@ namespace Efrpg.Filtering
             IncludeScalarValuedFunctions = FilterSettings.IncludeScalarValuedFunctions;
             IncludeStoredProcedures      = IncludeScalarValuedFunctions || IncludeTableValuedFunctions || FilterSettings.IncludeStoredProcedures;
 
-            SchemaFilters          = FilterSettings.SchemaFilters;
-            TableFilters           = FilterSettings.TableFilters;
-            ColumnFilters          = FilterSettings.ColumnFilters;
-            StoredProcedureFilters = FilterSettings.StoredProcedureFilters;
+            SchemaFilters           = FilterSettings.SchemaFilters;
+            TableFilters            = FilterSettings.TableFilters;
+            ColumnFilters           = FilterSettings.ColumnFilters;
+            StoredProcedureFilters  = FilterSettings.StoredProcedureFilters;
+            _hasMergedIncludeFilters = false;
 
             EnumDefinitions = new List<EnumDefinition>();
             Settings.AddEnumDefinitions?.Invoke(EnumDefinitions);
@@ -34,6 +36,12 @@ namespace Efrpg.Filtering
 
         public override bool IsExcluded(EntityName item)
         {
+            if(!_hasMergedIncludeFilters)
+            {
+                MergeIncludeFilters();
+                _hasMergedIncludeFilters = true;
+            }
+
             var schema = item as Schema;
             if (schema != null)
                 return SchemaFilters.Any(filter => filter.IsExcluded(schema));
@@ -136,6 +144,30 @@ namespace Efrpg.Filtering
                 return Settings.ForeignKeyAnnotationsProcessing(fkTable, pkTable, propName, fkPropName);
 
             return null;
+        }
+
+        private void MergeIncludeFilters()
+        {
+            MergeIncludeFilters(SchemaFilters);
+            MergeIncludeFilters(TableFilters);
+            MergeIncludeFilters(ColumnFilters);
+            MergeIncludeFilters(StoredProcedureFilters);
+        }
+
+        private static void MergeIncludeFilters<T>(List<IFilterType<T>> filters)
+        {
+            var list = filters
+                .Where(x => x.GetType() == typeof(RegexIncludeFilter))
+                .Select(x => (RegexIncludeFilter) x)
+                .ToList();
+
+            if (list.Count < 2)
+                return; // Nothing to merge
+
+            var singleRegex = string.Join("|", list.Select(x => x.Pattern()));
+            filters.RemoveAll(filter => filter.GetType() == typeof(RegexIncludeFilter));
+            var singleIncludeFilter = (IFilterType<T>) new RegexIncludeFilter(singleRegex);
+            filters.Add(singleIncludeFilter);
         }
     }
 }

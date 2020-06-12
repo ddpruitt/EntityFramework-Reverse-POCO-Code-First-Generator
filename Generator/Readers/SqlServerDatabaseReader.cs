@@ -97,7 +97,7 @@ FROM
     INNER JOIN sys.all_columns AS sc ON sc.object_id = COALESCE( st.object_id, sv.object_id ) AND c.COLUMN_NAME = sc.[name]
 
 WHERE
-    c.TABLE_NAME NOT IN ('EdmMetadata', '__MigrationHistory', '__RefactorLog', 'sysdiagrams')
+    c.TABLE_NAME NOT IN ('EdmMetadata', '__MigrationHistory', '__EFMigrationsHistory', '__RefactorLog', 'sysdiagrams')
 
 
 CREATE NONCLUSTERED INDEX IX_EfPoco_Columns
@@ -963,6 +963,11 @@ SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, RETURN_DATA_TYPE, ORDINAL_P
     , CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION, USER_DEFINED_TYPE FROM #SynonymStoredProcedureDetails";
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            return "dbo";
+        }
+
         protected override string SpecialQueryFlags()
         {
             if (Settings.IncludeQueryTraceOn9481Flag)
@@ -970,6 +975,11 @@ SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, RETURN_DATA_TYPE, ORDINAL_P
 OPTION (QUERYTRACEON 9481)";
 
             return string.Empty;
+        }
+
+        protected override bool HasTemporalTableSupport()
+        {
+            return DatabaseProductMajorVersion >= 13;
         }
 
         protected override string ReadDatabaseEditionSQL()

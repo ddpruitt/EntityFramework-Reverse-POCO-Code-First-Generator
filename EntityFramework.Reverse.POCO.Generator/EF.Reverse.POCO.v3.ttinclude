@@ -157,6 +157,7 @@
         // Ie. dbo.hello will be Hello.
         //     abc.hello will be AbcHello.
         public static bool PrependSchemaName = true; // Control if the schema name is prepended to the table name
+        public static string DefaultSchema = null; // Set via DatabaseReader.DefaultSchema()
 
         // Table Suffix ***********************************************************************************************************************
         // Appends the suffix to the generated classes names
@@ -170,13 +171,13 @@
             // Northwind example:
 
             // [Orders] (Table) to [Invoices] (View) is one-to-many using Orders.OrderID = Invoices.OrderID
-            // gen.AddRelationship(filter, foreignKeys, tablesAndViews, "orders_to_invoices", "dbo", "Orders", "OrderID", "dbo", "Invoices", "OrderID", null, null, true);
+            // gen.AddRelationship(filter, foreignKeys, tablesAndViews, "orders_to_invoices", Settings.DefaultSchema, "Orders", "OrderID", "dbo", "Invoices", "OrderID", null, null, true);
 
             // [Orders] (Table) to [Orders Qry] (View) is one-to-zeroOrOne ( [Orders].OrderID = [Orders Qry].OrderID )
-            // gen.AddRelationship(filter, foreignKeys, tablesAndViews, "orders_to_ordersQry", "dbo", "Orders", "OrderID", "dbo", "Orders Qry", "OrderID", "ParentFkName", "ChildFkName", true);
+            // gen.AddRelationship(filter, foreignKeys, tablesAndViews, "orders_to_ordersQry", Settings.DefaultSchema, "Orders", "OrderID", "dbo", "Orders Qry", "OrderID", "ParentFkName", "ChildFkName", true);
 
             // [Order Details] (Table) to [Invoices] (View) is one-to-zeroOrOne - but uses a composite-key: ( [Order Details].OrderID,ProductID = [Invoices].OrderID,ProductID )
-            // gen.AddRelationship(filter, foreignKeys, tablesAndViews, "orderDetails_to_invoices", "dbo", "Order Details", new[] { "OrderID", "ProductID" }, "dbo", "Invoices", new[] { "OrderID", "ProductID" }, null, null, true);
+            // gen.AddRelationship(filter, foreignKeys, tablesAndViews, "orderDetails_to_invoices", Settings.DefaultSchema, "Order Details", new[] { "OrderID", "ProductID" }, "dbo", "Invoices", new[] { "OrderID", "ProductID" }, null, null, true);
         };
 
         // StoredProcedure return types *******************************************************************************************************
@@ -458,13 +459,13 @@
         public static Action<List<EnumDefinition>> AddEnumDefinitions = delegate (List<EnumDefinition> enumDefinitions)
         {
             // Examples:
-            //enumDefinitions.Add(new EnumDefinition { Schema = "dbo", Table = "match_table_name", Column = "match_column_name", EnumType = "name_of_enum" });
+            //enumDefinitions.Add(new EnumDefinition { Schema = Settings.DefaultSchema, Table = "match_table_name", Column = "match_column_name", EnumType = "name_of_enum" });
 
             // This will replace OrderHeader.OrderStatus type to be an OrderStatusType enum
-            //enumDefinitions.Add(new EnumDefinition { Schema = "dbo", Table = "OrderHeader", Column = "OrderStatus", EnumType = "OrderStatusType" }); 
+            //enumDefinitions.Add(new EnumDefinition { Schema = Settings.DefaultSchema, Table = "OrderHeader", Column = "OrderStatus", EnumType = "OrderStatusType" }); 
 
             // This will replace any table *.OrderStatus type to be an OrderStatusType enum
-            //enumDefinitions.Add(new EnumDefinition { Schema = "dbo", Table = "*", Column = "OrderStatus", EnumType = "OrderStatusType" });
+            //enumDefinitions.Add(new EnumDefinition { Schema = Settings.DefaultSchema, Table = "*", Column = "OrderStatus", EnumType = "OrderStatusType" });
         };
 
         // Generate multiple db contexts in a single go ***************************************************************************************
@@ -714,6 +715,7 @@
         protected readonly List<IFilterType<Table>>           TableFilters;
         protected readonly List<IFilterType<Column>>          ColumnFilters;
         protected readonly List<IFilterType<StoredProcedure>> StoredProcedureFilters;
+        private bool _hasMergedIncludeFilters;
 
         public SingleContextFilter()
         {
@@ -723,10 +725,11 @@
             IncludeScalarValuedFunctions = FilterSettings.IncludeScalarValuedFunctions;
             IncludeStoredProcedures      = IncludeScalarValuedFunctions || IncludeTableValuedFunctions || FilterSettings.IncludeStoredProcedures;
 
-            SchemaFilters          = FilterSettings.SchemaFilters;
-            TableFilters           = FilterSettings.TableFilters;
-            ColumnFilters          = FilterSettings.ColumnFilters;
-            StoredProcedureFilters = FilterSettings.StoredProcedureFilters;
+            SchemaFilters           = FilterSettings.SchemaFilters;
+            TableFilters            = FilterSettings.TableFilters;
+            ColumnFilters           = FilterSettings.ColumnFilters;
+            StoredProcedureFilters  = FilterSettings.StoredProcedureFilters;
+            _hasMergedIncludeFilters = false;
 
             EnumDefinitions = new List<EnumDefinition>();
             Settings.AddEnumDefinitions?.Invoke(EnumDefinitions);
@@ -734,6 +737,12 @@
 
         public override bool IsExcluded(EntityName item)
         {
+            if(!_hasMergedIncludeFilters)
+            {
+                MergeIncludeFilters();
+                _hasMergedIncludeFilters = true;
+            }
+
             var schema = item as Schema;
             if (schema != null)
                 return SchemaFilters.Any(filter => filter.IsExcluded(schema));
@@ -836,6 +845,30 @@
                 return Settings.ForeignKeyAnnotationsProcessing(fkTable, pkTable, propName, fkPropName);
 
             return null;
+        }
+
+        private void MergeIncludeFilters()
+        {
+            MergeIncludeFilters(SchemaFilters);
+            MergeIncludeFilters(TableFilters);
+            MergeIncludeFilters(ColumnFilters);
+            MergeIncludeFilters(StoredProcedureFilters);
+        }
+
+        private static void MergeIncludeFilters<T>(List<IFilterType<T>> filters)
+        {
+            var list = filters
+                .Where(x => x.GetType() == typeof(RegexIncludeFilter))
+                .Select(x => (RegexIncludeFilter) x)
+                .ToList();
+
+            if (list.Count < 2)
+                return; // Nothing to merge
+
+            var singleRegex = string.Join("|", list.Select(x => x.Pattern()));
+            filters.RemoveAll(filter => filter.GetType() == typeof(RegexIncludeFilter));
+            var singleIncludeFilter = (IFilterType<T>) new RegexIncludeFilter(singleRegex);
+            filters.Add(singleIncludeFilter);
         }
     }
 
@@ -1633,6 +1666,7 @@
         Custom, // Use this for .NET Core projects. It will write the files directly. Visual Studio will automatically detect new files and include them in the project.
         Null // For testing only. Does nothing.
     }
+
     public class ColumnFilter : IFilterType<Column>
     {
         // Filtering of columns using a function.
@@ -1640,7 +1674,7 @@
         public bool IsExcluded(Column c)
         {
             // Example: Exclude any columns whose table is in 'dbo' schema and column name starts with 'bank'
-            //if(c.ParentTable.Schema.Equals("dbo", StringComparison.InvariantCultureIgnoreCase) &&
+            //if(c.ParentTable.Schema.DbName.Equals(Settings.DefaultSchema, StringComparison.InvariantCultureIgnoreCase) &&
             //   c.NameHumanCase.ToLowerInvariant().StartsWith("bank"))
             //    return true;
 
@@ -1853,8 +1887,8 @@
     public interface IFilter
     {
     }
+
     public interface IFilterType<in T> : IFilter
-        //where T : HasName
     {
         bool IsExcluded(T item);
     }
@@ -2367,7 +2401,7 @@
 
         public MultiContextNameNormalisation(string defaultSchema)
         {
-            DefaultSchema = string.IsNullOrWhiteSpace(defaultSchema) ? "dbo" : defaultSchema.Trim().ToLowerInvariant();
+            DefaultSchema = string.IsNullOrWhiteSpace(defaultSchema) ? Settings.DefaultSchema.Trim().ToLowerInvariant() : defaultSchema.Trim().ToLowerInvariant();
         }
 
         public SchemaAndName Normalise(string name)
@@ -2606,6 +2640,11 @@
         {
             return !_filter.IsMatch(item.DbName);
         }
+
+        public string Pattern()
+        {
+            return _filter.ToString();
+        }
     }
     public class SchemaAndName
     {
@@ -2650,12 +2689,13 @@
         public bool IsExcluded(StoredProcedure sp)
         {
             // Example: Exclude any stored procedure in dbo schema with "order" in its name.
-            //if(sp.Schema.Name.Equals("dbo", StringComparison.InvariantCultureIgnoreCase) && sp.NameHumanCase.ToLowerInvariant().Contains("order"))
-            //    return false;
+            //if(sp.Schema.DbName.Equals("dbo", StringComparison.InvariantCultureIgnoreCase) && sp.NameHumanCase.ToLowerInvariant().Contains("order"))
+            //   return false;
 
             return false;
         }
     }
+
     public class TableFilter : IFilterType<Table>
     {
         // Filtering of tables using a function.
@@ -2744,7 +2784,7 @@
                 .Replace(" ", string.Empty)
                 .Replace("$", string.Empty);
 
-            if (string.Compare(PkSchema, "dbo", StringComparison.OrdinalIgnoreCase) != 0 && Settings.PrependSchemaName)
+            if (string.Compare(PkSchema, Settings.DefaultSchema, StringComparison.OrdinalIgnoreCase) != 0 && Settings.PrependSchemaName)
                 pkTableHumanCase = PkSchema + "_" + pkTableHumanCase;
 
             pkTableHumanCase += suffix;
@@ -3032,7 +3072,7 @@
 
                 indexes.AddRange(columns
                     .Select(_generator.IndexModelBuilder)
-                    .Where(x => !string.IsNullOrEmpty(x)));
+                    .Where(x => !string.IsNullOrWhiteSpace(x)));
             }
 
             var isEfCore3 = Settings.IsEfCore3();
@@ -3074,7 +3114,8 @@
                 StoredProcModelBuilderCommand          = isEfCore3 ? "Entity"        : "Query",
                 StoredProcModelBuilderPostCommand      = isEfCore3 ? ".HasNoKey()"   : string.Empty,
                 OnConfigurationUsesConfiguration       = Settings.OnConfiguration == OnConfiguration.Configuration,
-                OnConfigurationUsesConnectionString    = Settings.OnConfiguration == OnConfiguration.ConnectionString
+                OnConfigurationUsesConnectionString    = Settings.OnConfiguration == OnConfiguration.ConnectionString,
+                DefaultSchema                          = Settings.DefaultSchema
             };
 
             var co = new CodeOutput(filename, "Database context", GlobalUsings);
@@ -3278,7 +3319,7 @@
                 Schema                    = table.Schema.DbName,
                 PrimaryKeyNameHumanCase   = primaryKey ?? table.PrimaryKeyNameHumanCase(),
                 HasSchema                 = !string.IsNullOrEmpty(table.Schema.DbName),
-                ClassModifier             = Settings.EntityClassesModifiers,
+                ClassModifier             = Settings.ConfigurationClassesModifiers,
                 ClassComment              = table.WriteComments(),
                 Columns                   = columns.Select(x => x.Config).ToList(),
                 HasReverseNavigation      = table.ReverseNavigationProperty.Count > 0,
@@ -3572,6 +3613,13 @@
                 _fileManagementService.Error(string.Empty);
                 _fileManagementService.Error("// ------------------------------------------------------------------------------------------------");
                 _fileManagementService.Error(string.Format("// WARNING: Failed to load provider \"{0}\" - {1}", providerName, error));
+                _fileManagementService.Error("// Allowed providers:");
+                foreach (DataRow fc in DbProviderFactories.GetFactoryClasses().Rows)
+                {
+                    var s = string.Format("//    \"{0}\"", fc[2]);
+                    _fileManagementService.Error(s);
+                }
+                _fileManagementService.Error(string.Empty);
                 _fileManagementService.Error("/*" + x.StackTrace + "*/");
                 _fileManagementService.Error("// ------------------------------------------------------------------------------------------------");
                 _fileManagementService.Error(string.Empty);
@@ -3769,7 +3817,7 @@
                     var singularCleanTableName = Inflector.MakeSingular(DatabaseReader.CleanUp(tableName));
                     table.NameHumanCase = (Settings.UsePascalCase ? Inflector.ToTitleCase(singularCleanTableName) : singularCleanTableName).Replace(" ", "").Replace("$", "").Replace(".", "");
 
-                    if (Settings.PrependSchemaName && string.Compare(table.Schema.DbName, "dbo", StringComparison.OrdinalIgnoreCase) != 0)
+                    if (Settings.PrependSchemaName && string.Compare(table.Schema.DbName, Settings.DefaultSchema, StringComparison.OrdinalIgnoreCase) != 0)
                         table.NameHumanCase = table.Schema.DbName + "_" + table.NameHumanCase;
 
                     if (filter.IsExcluded(table)) // Retest exclusion after table rename
@@ -3927,12 +3975,14 @@
 
             if (rawForeignKeys == null)
                 rawForeignKeys = new List<RawForeignKey>();
+            //else
+                //SortForeignKeys(rawForeignKeys);
 
             foreach (var filterKeyValuePair in FilterList.GetFilters())
             {
                 var filter = filterKeyValuePair.Value;
                 var fks = new List<RawForeignKey>();
-                fks.AddRange(rawForeignKeys);
+                fks.AddRange(rawForeignKeys/*.OrderBy(x => x.SortOrder).ThenBy(x => x.FkTableName).ThenBy(x => x.PkTableName)*/);
 
                 if (!Settings.GenerateSingleDbContext)
                 {
@@ -3986,6 +4036,38 @@
                     filter.Tables.IdentifyMappingTables(foreignKeys, false, DatabaseReader.IncludeSchema);
             }
         }
+
+        /*private void SortForeignKeys(List<RawForeignKey> rawForeignKeys)
+        {
+            foreach (var fk in rawForeignKeys)
+            {
+                fk.SortOrder = 10;
+                
+                var fkColumn = fk.FkColumn.ToLowerInvariant();
+                var pkTable = fk.PkTableName.ToLowerInvariant();
+                
+                // Matches exactly
+                if (fkColumn == pkTable)
+                {
+                    fk.SortOrder = 1;
+                    continue;
+                }
+
+                // Matches without 'id'
+                if(fkColumn.EndsWith("id") && fkColumn.Remove(fkColumn.Length - 2, 2) == pkTable)
+                {
+                    fk.SortOrder = 2;
+                    continue;
+                }
+
+                // Matches if trimmed
+                if(fkColumn.Length > pkTable.Length && fkColumn.Substring(0, pkTable.Length) == pkTable)
+                {
+                    fk.SortOrder = 3;
+                    continue;
+                }
+            }
+        }*/
 
         private void AddExtendedPropertiesToFilters(List<RawExtendedProperty> extendedProperties)
         {
@@ -4100,7 +4182,7 @@
                         IsStoredProcedure      = proc.IsStoredProcedure
                     };
                     sp.NameHumanCase = DatabaseReader.CleanUp(sp.NameHumanCase);
-                    if (Settings.PrependSchemaName && (string.Compare(proc.Schema, "dbo", StringComparison.OrdinalIgnoreCase) != 0))
+                    if (Settings.PrependSchemaName && (string.Compare(proc.Schema, Settings.DefaultSchema, StringComparison.OrdinalIgnoreCase) != 0))
                         sp.NameHumanCase = proc.Schema + "_" + sp.NameHumanCase;
 
                     sp.Parameters.AddRange(rawStoredProcs
@@ -5008,26 +5090,18 @@
         public override string IndexModelBuilder(Column c)
         {
             var sb = new StringBuilder(1024);
-            var count = c.Indexes.Count;
-            //var wouldForceColumnToBeNotNull = c.Indexes.Any(x => x.WouldForceColumnToBeNotNull);
-            var wouldForceColumnToBeNotNull = false; // EF6 correctly takes care of unique indexes and nullable/optional columns
+            var indexes = c.Indexes.Where(x => !x.IsPrimaryKey).OrderBy(x => x.IndexName).ThenBy(x => x.KeyOrdinal).ToList();
+            var count = indexes.Count;
             var first = true;
             var cannotUseAdded = false;
             var closeBrackets = false;
             var n = count;
-            foreach (var index in c.Indexes.OrderBy(x => x.IndexName).ThenBy(x => x.KeyOrdinal))
+            foreach (var index in indexes)
             {
                 --n;
                 if (first)
                 {
-                    sb.AppendLine();
-                    if (wouldForceColumnToBeNotNull)
-                    {
-                        sb.AppendLine("        /* Cannot use index as this would force the column to be not nullable");
-                        cannotUseAdded = true;
-                    }
-
-                    sb.AppendLine($"        modelBuilder.Entity<{c.ParentTable.NameHumanCaseWithSuffix()}>()");
+                    sb.AppendLine($"modelBuilder.Entity<{c.ParentTable.NameHumanCaseWithSuffix()}>()");
                     sb.AppendLine($"            .Property(e => e.{c.NameHumanCase})");
                     sb.AppendLine("            .HasColumnAnnotation(");
                     sb.AppendLine("                IndexAnnotation.AnnotationName,");
@@ -11231,7 +11305,7 @@ and limitations under the License.
                     return "Npgsql";
 
                 case DatabaseType.Oracle:
-                    return "Oracle.DataAccess.Client";
+                    return "System.Data.OracleClient";
 
                 default:
                     throw new ArgumentOutOfRangeException();
@@ -11273,8 +11347,10 @@ and limitations under the License.
         protected abstract string SynonymStoredProcedureSQLSetup();
         protected abstract string SynonymStoredProcedureSQL();
 
-        // Database specific flags
+        // Database specific
+        protected abstract string DefaultSchema(DbConnection conn);
         protected abstract string SpecialQueryFlags();
+        protected abstract bool HasTemporalTableSupport();
 
         // Stored proc return objects
         public abstract void ReadStoredProcReturnObjects(List<StoredProcedure> procs);
@@ -11326,13 +11402,28 @@ and limitations under the License.
                         DatabaseEdition             = rdr["Edition"].ToString();
                         DatabaseEngineEdition       = rdr["EngineEdition"].ToString();
                         DatabaseProductVersion      = rdr["ProductVersion"].ToString();
-                        DatabaseProductMajorVersion = int.Parse(DatabaseProductVersion.Substring(0, 2).Replace(".", string.Empty));
+                        DatabaseProductMajorVersion = 0;
 
-                        DatabaseDetails.AppendLine("// Database Edition       : " + DatabaseEdition);
-                        DatabaseDetails.AppendLine("// Database Engine Edition: " + DatabaseEngineEdition);
-                        DatabaseDetails.AppendLine("// Database Version       : " + DatabaseProductVersion);
+                        if(!string.IsNullOrEmpty(DatabaseEdition))
+                            DatabaseDetails.AppendLine("// Database Edition       : " + DatabaseEdition);
+        
+                        if(!string.IsNullOrEmpty(DatabaseEngineEdition))
+                            DatabaseDetails.AppendLine("// Database Engine Edition: " + DatabaseEngineEdition);
+
+                        if (!string.IsNullOrEmpty(DatabaseProductVersion))
+                        {
+                            DatabaseDetails.AppendLine("// Database Version       : " + DatabaseProductVersion);
+
+                            var version = DatabaseProductVersion;
+                            if (version.Contains('.'))
+                                version = version.Substring(0, version.IndexOf('.'));
+
+                            DatabaseProductMajorVersion = int.Parse(version);
+                        }
                     }
                 }
+
+                Settings.DefaultSchema = DefaultSchema(conn);
             }
         }
 
@@ -11381,11 +11472,7 @@ and limitations under the License.
             if (connection == null)
                 return null;
 
-            var cmd = _factory.CreateCommand();
-            if (cmd == null)
-                return null;
-
-            cmd.Connection = connection;
+            var cmd = connection.CreateCommand();
             if(Settings.DatabaseType != DatabaseType.SqlCe)
                 cmd.CommandTimeout = Settings.CommandTimeout;
 
@@ -11416,8 +11503,7 @@ and limitations under the License.
                 else
                     sql = TableSQL() + SpecialQueryFlags();
 
-                var temporalTableSupport = DatabaseProductMajorVersion >= 13;
-                if (!temporalTableSupport)
+                if (!HasTemporalTableSupport())
                 {
                     // Replace the column names (only present in SQL Server 2016 or later) with literal constants so the query works with older versions of SQL Server.
                     sql = sql
@@ -11436,21 +11522,21 @@ and limitations under the License.
                             rdr["SchemaName"].ToString().Trim(),
                             rdr["TableName"].ToString().Trim(),
                             string.Compare(rdr["TableType"].ToString().Trim(), "View", StringComparison.OrdinalIgnoreCase) == 0,
-                            (int) rdr["Scale"],
+                            ChangeType<int>(rdr["Scale"]),
                             rdr["TypeName"].ToString().Trim().ToLower(),
-                            (bool) rdr["IsNullable"],
-                            (int) rdr["MaxLength"],
-                            (int) rdr["DateTimePrecision"],
-                            (int) rdr["Precision"],
-                            (bool) rdr["IsIdentity"],
-                            (bool) rdr["IsComputed"],
-                            (bool) rdr["IsRowGuid"],
-                            (byte) rdr["GeneratedAlwaysType"],
-                            (bool) rdr["IsStoreGenerated"],
-                            (int) rdr["PrimaryKeyOrdinal"],
-                            (bool) rdr["PrimaryKey"],
-                            (bool) rdr["IsForeignKey"],
-                            (int) rdr["Ordinal"],
+                            ChangeType<bool>(rdr["IsNullable"]),
+                            ChangeType<int>(rdr["MaxLength"]),
+                            ChangeType<int>(rdr["DateTimePrecision"]),
+                            ChangeType<int>(rdr["Precision"]),
+                            ChangeType<bool>(rdr["IsIdentity"]),
+                            ChangeType<bool>(rdr["IsComputed"]),
+                            ChangeType<bool>(rdr["IsRowGuid"]),
+                            ChangeType<byte>(rdr["GeneratedAlwaysType"]),
+                            ChangeType<bool>(rdr["IsStoreGenerated"]),
+                            ChangeType<int>(rdr["PrimaryKeyOrdinal"]),
+                            ChangeType<bool>(rdr["PrimaryKey"]),
+                            ChangeType<bool>(rdr["IsForeignKey"]),
+                            ChangeType<int>(rdr["Ordinal"]),
                             rdr["ColumnName"].ToString().Trim(),
                             rdr["Default"].ToString().Trim()
                         );
@@ -11500,9 +11586,9 @@ and limitations under the License.
                             rdr["PK_Table"].ToString(),
                             rdr["fkSchema"].ToString(),
                             rdr["FK_Table"].ToString(),
-                            (int) rdr["ORDINAL_POSITION"],
-                            ((int) rdr["CascadeOnDelete"]) == 1,
-                            (bool) rdr["IsNotEnforced"],
+                            ChangeType<int>(rdr["ORDINAL_POSITION"]),
+                            ChangeType<int>(rdr["CascadeOnDelete"]) == 1,
+                            ChangeType<bool>(rdr["IsNotEnforced"]),
                             false
                         );
 
@@ -11547,13 +11633,13 @@ and limitations under the License.
                             rdr["TableSchema"].ToString().Trim(),
                             rdr["TableName"].ToString().Trim(),
                             rdr["IndexName"].ToString().Trim(),
-                            (byte) rdr["KeyOrdinal"],
+                            ChangeType<byte>(rdr["KeyOrdinal"]),
                             rdr["ColumnName"].ToString().Trim(),
-                            (int) rdr["ColumnCount"],
-                            (bool) rdr["IsUnique"],
-                            (bool) rdr["IsPrimaryKey"],
-                            (bool) rdr["IsUniqueConstraint"],
-                            ((int) rdr["IsClustered"]) == 1
+                            ChangeType<int>(rdr["ColumnCount"]),
+                            ChangeType<bool>(rdr["IsUnique"]),
+                            ChangeType<bool>(rdr["IsPrimaryKey"]),
+                            ChangeType<bool>(rdr["IsUniqueConstraint"]),
+                            ChangeType<int>(rdr["IsClustered"]) == 1
                         );
 
                         result.Add(index);
@@ -11562,6 +11648,14 @@ and limitations under the License.
             }
 
             return result;
+        }
+
+        // Use this on non-string types to guarantee type correctness between different databases
+        private T ChangeType<T>(object o)
+        {
+            if (o.GetType() != typeof(T))
+                return (T) Convert.ChangeType(o, typeof(T));
+            return (T) o;
         }
 
         public List<RawExtendedProperty> ReadExtendedProperties()
@@ -11651,37 +11745,49 @@ and limitations under the License.
 
                 using (var rdr = cmd.ExecuteReader())
                 {
+                    var lastName = string.Empty;
+                    var emptyParamNumber = 1;
                     while (rdr.Read())
                     {
+                        var rawDataType    = rdr["DATA_TYPE"];
                         var schema         = rdr["SPECIFIC_SCHEMA"] .ToString().Trim();
                         var name           = rdr["SPECIFIC_NAME"]   .ToString().Trim();
                         var routineType    = rdr["ROUTINE_TYPE"]    .ToString().Trim().ToLower();
                         var returnDataType = rdr["RETURN_DATA_TYPE"].ToString().Trim().ToLower();
-                        var dataType       = rdr["DATA_TYPE"]       .ToString().Trim().ToLower();
+                        var dataType       = rawDataType            .ToString().Trim().ToLower();
                         var parameterMode  = rdr["PARAMETER_MODE"]  .ToString().Trim().ToLower();
+
+                        if(name != lastName)
+                        {
+                            lastName = name;
+                            emptyParamNumber = 1;
+                        }
 
                         var isTableValuedFunction  = (routineType == "function" && returnDataType == "table");
                         var isScalarValuedFunction = (routineType == "function" && returnDataType != "table");
                         var isStoredProcedure      = (routineType == "procedure");
 
                         StoredProcedureParameter parameter = null;
-                        if (rdr["DATA_TYPE"] != null && rdr["DATA_TYPE"] != DBNull.Value)
+                        if (rawDataType != DBNull.Value)
                         {
                             parameter = new StoredProcedureParameter
                             {
-                                Ordinal             = (int) rdr["ORDINAL_POSITION"],
+                                Ordinal             = ChangeType<int>(rdr["ORDINAL_POSITION"]),
                                 Name                = rdr["PARAMETER_NAME"].ToString().Trim(),
                                 SqlDbType           = GetStoredProcedureParameterDbType(dataType),
                                 ReturnSqlDbType     = GetStoredProcedureParameterDbType(returnDataType),
                                 PropertyType        = GetPropertyType(dataType),
                                 ReturnPropertyType  = GetPropertyType(returnDataType),
-                                DateTimePrecision   = (short) rdr["DATETIME_PRECISION"],
-                                MaxLength           = (int) rdr["CHARACTER_MAXIMUM_LENGTH"],
-                                Precision           = (byte) rdr["NUMERIC_PRECISION"],
-                                Scale               = (int) rdr["NUMERIC_SCALE"],
+                                DateTimePrecision   = ChangeType<short>(rdr["DATETIME_PRECISION"]),
+                                MaxLength           = ChangeType<int>(rdr["CHARACTER_MAXIMUM_LENGTH"]),
+                                Precision           = ChangeType<byte>(rdr["NUMERIC_PRECISION"]),
+                                Scale               = ChangeType<int>(rdr["NUMERIC_SCALE"]),
                                 UserDefinedTypeName = rdr["USER_DEFINED_TYPE"].ToString().Trim(),
                                 IsSpatial           = SpatialTypes.Contains(dataType)
                             };
+
+                            if (string.IsNullOrEmpty(parameter.Name))
+                                parameter.Name = "p" + emptyParamNumber++;
 
                             switch (parameterMode)
                             {
@@ -12315,9 +12421,19 @@ and limitations under the License.
             return string.Empty;
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            return "mydb";
+        }
+
         protected override string SpecialQueryFlags()
         {
             return string.Empty;
+        }
+
+        protected override bool HasTemporalTableSupport()
+        {
+            return false;
         }
 
         public override void ReadStoredProcReturnObjects(List<StoredProcedure> procs)
@@ -12418,9 +12534,31 @@ and limitations under the License.
             return string.Empty;
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            var cmd = GetCmd(conn);
+            if (cmd != null)
+            {
+                cmd.CommandText = "SELECT SYS_CONTEXT('USERENV','CURRENT_SCHEMA') FROM DUAL";
+                using (var rdr = cmd.ExecuteReader())
+                {
+                    if (rdr.Read())
+                    {
+                        return rdr[0].ToString();
+                    }
+                }
+            }
+            return "system";
+        }
+
         protected override string SpecialQueryFlags()
         {
             return string.Empty;
+        }
+
+        protected override bool HasTemporalTableSupport()
+        {
+            return false;
         }
 
         public override void ReadStoredProcReturnObjects(List<StoredProcedure> procs)
@@ -12527,9 +12665,19 @@ and limitations under the License.
             return string.Empty;
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            return "dbo";
+        }
+
         protected override string SpecialQueryFlags()
         {
             return string.Empty;
+        }
+
+        protected override bool HasTemporalTableSupport()
+        {
+            return false;
         }
 
         public override void ReadStoredProcReturnObjects(List<StoredProcedure> procs)
@@ -12552,17 +12700,100 @@ and limitations under the License.
 
         protected override string TableSQL()
         {
-            return string.Empty;
+            return @"
+SELECT  T.TABLE_SCHEMA AS ""SchemaName"",
+        T.TABLE_NAME AS ""TableName"",
+        T.TABLE_TYPE AS ""TableType"",
+        CAST(0 AS SMALLINT) AS ""TableTemporalType"",
+        C.ORDINAL_POSITION AS ""Ordinal"",
+        C.COLUMN_NAME AS ""ColumnName"",
+        CASE WHEN LOWER(C.IS_NULLABLE) = 'yes' THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS ""IsNullable"",
+        C.DATA_TYPE AS ""TypeName"",
+        COALESCE(C.CHARACTER_MAXIMUM_LENGTH, 0) AS ""MaxLength"",
+        CAST(COALESCE(C.NUMERIC_PRECISION, 0) AS INT) AS ""Precision"",
+        COALESCE(C.COLUMN_DEFAULT, '') AS ""Default"",
+        CAST(COALESCE(C.DATETIME_PRECISION, 0) AS INT) AS ""DateTimePrecision"",
+        COALESCE(C.NUMERIC_SCALE, 0) AS ""Scale"",
+        CASE WHEN LOWER(C.is_identity) = 'yes' THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT)END AS ""IsIdentity"",
+        CAST(0 AS BIT) AS ""IsRowGuid"",
+        CASE WHEN LOWER(C.is_generated) = 'never' THEN CAST(0 AS BIT) ELSE CAST(1 AS BIT) END AS ""IsComputed"",
+        CAST(0 AS SMALLINT) AS ""GeneratedAlwaysType"",
+        CAST(CASE WHEN LOWER(C.is_identity) = 'yes' OR LOWER(C.is_generated) <> 'never' THEN 1 ELSE 0 END AS BIT) AS IsStoreGenerated,
+        CAST(CASE WHEN pk.ordinal_position > 0 THEN 1 ELSE 0 END AS bit) as ""PrimaryKey"",
+        COALESCE(pk.ordinal_position, 0) ""PrimaryKeyOrdinal"",
+        CAST(CASE WHEN fk.COLUMN_NAME IS NOT NULL THEN 1 ELSE 0 END AS bit) AS ""IsForeignKey""
+FROM    INFORMATION_SCHEMA.TABLES T
+        INNER JOIN INFORMATION_SCHEMA.COLUMNS C
+            ON T.TABLE_SCHEMA   = C.TABLE_SCHEMA
+               AND C.TABLE_NAME = T.TABLE_NAME
+        LEFT OUTER JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+            INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE pk
+                ON tc.CONSTRAINT_SCHEMA   = pk.TABLE_SCHEMA
+                   AND tc.TABLE_NAME      = pk.TABLE_NAME
+                   AND tc.CONSTRAINT_NAME = pk.CONSTRAINT_NAME
+                   AND LOWER(tc.CONSTRAINT_TYPE) = 'primary key'
+            ON pk.TABLE_SCHEMA    = C.TABLE_SCHEMA
+               AND pk.TABLE_NAME  = C.TABLE_NAME
+               AND pk.COLUMN_NAME = C.COLUMN_NAME
+        LEFT OUTER JOIN INFORMATION_SCHEMA.TABLE_CONSTRAINTS tcfk
+            INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE fk
+                ON tcfk.CONSTRAINT_SCHEMA   = fk.TABLE_SCHEMA
+                   AND tcfk.TABLE_NAME      = fk.TABLE_NAME
+                   AND tcfk.CONSTRAINT_NAME = fk.CONSTRAINT_NAME
+                   AND LOWER(tcfk.CONSTRAINT_TYPE) = 'foreign key'
+            ON fk.TABLE_SCHEMA    = C.TABLE_SCHEMA
+               AND fk.TABLE_NAME  = C.TABLE_NAME
+               AND fk.COLUMN_NAME = C.COLUMN_NAME
+WHERE   (LOWER(T.TABLE_TYPE) = 'base table' OR LOWER(T.TABLE_TYPE) = 'view')
+        AND (LOWER(T.TABLE_SCHEMA) NOT IN ('pg_catalog', 'information_schema'))
+        AND (LOWER(T.TABLE_NAME) NOT IN ('edmmetadata', '__migrationhistory', '__efmigrationshistory', '__refactorlog'))
+ORDER BY C.TABLE_NAME, C.COLUMN_NAME, C.ORDINAL_POSITION;";
         }
 
         protected override string ForeignKeySQL()
         {
-            return string.Empty;
+            return @"
+SELECT  tc.TABLE_NAME AS ""FK_Table"",
+        kcu.COLUMN_NAME AS ""FK_Column"",
+        ccu.TABLE_NAME AS ""PK_Table"",
+        ccu.COLUMN_NAME AS ""PK_Column"",
+        tc.CONSTRAINT_NAME AS ""Constraint_Name"",
+        ccu.TABLE_SCHEMA AS ""fkSchema"",
+        tc.TABLE_SCHEMA AS ""pkSchema"",
+        ccu.COLUMN_NAME as ""primarykey"",
+        kcu.ORDINAL_POSITION AS ""ORDINAL_POSITION"",
+        CASE WHEN LOWER(fk.DELETE_RULE) = 'cascade' THEN 1 ELSE 0 END AS ""CascadeOnDelete"",
+        CAST(0 AS BIT) AS ""IsNotEnforced""
+FROM    INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+        INNER JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+            ON tc.CONSTRAINT_NAME       = kcu.CONSTRAINT_NAME
+               AND tc.TABLE_SCHEMA      = kcu.TABLE_SCHEMA
+        INNER JOIN INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE ccu
+            ON ccu.CONSTRAINT_NAME      = tc.CONSTRAINT_NAME
+               AND ccu.TABLE_SCHEMA     = tc.TABLE_SCHEMA
+        INNER JOIN INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS fk
+            ON fk.CONSTRAINT_CATALOG    = ccu.CONSTRAINT_CATALOG
+               AND fk.CONSTRAINT_SCHEMA = ccu.CONSTRAINT_SCHEMA
+               AND fk.CONSTRAINT_NAME   = ccu.CONSTRAINT_NAME
+WHERE   LOWER(tc.CONSTRAINT_TYPE) = 'foreign key'";
         }
 
         protected override string ExtendedPropertySQL()
         {
-            return string.Empty;
+            return @"
+SELECT  c.TABLE_SCHEMA as ""schema"",
+        c.TABLE_NAME as ""table"",
+        c.COLUMN_NAME as ""column"",
+        pgd.description as ""property""
+FROM    pg_catalog.pg_statio_all_tables st
+        INNER JOIN pg_catalog.pg_description pgd
+            ON (pgd.objoid = st.relid)
+        INNER JOIN INFORMATION_SCHEMA.COLUMNS c
+            ON (
+                   pgd.objsubid       = c.ORDINAL_POSITION
+                   AND c.TABLE_SCHEMA = st.schemaname
+                   AND c.TABLE_NAME   = st.relname
+               );";
         }
 
         protected override string DoesExtendedPropertyTableExistSQL()
@@ -12572,22 +12803,67 @@ and limitations under the License.
 
         protected override string IndexSQL()
         {
-            return string.Empty;
+            return @"
+SELECT n.nspname AS ""TableSchema"",
+    t.relname AS ""TableName"",
+    i.relname AS ""IndexName"",
+    a.attnum AS ""KeyOrdinal"",
+    a.attname AS ""ColumnName"",
+    ix.indisunique AS ""IsUnique"",
+    ix.indisprimary AS ""IsPrimaryKey"",
+    0 AS ""IsUniqueConstraint"",
+    ix.indisclustered AS ""IsClustered"",
+    ix.indnatts AS ""ColumnCount""
+FROM
+    pg_index ix
+    INNER JOIN pg_class t
+        ON t.oid = ix.indrelid AND LOWER(t.relkind) = 'r'
+    INNER JOIN pg_class i
+        ON i.oid = ix.indexrelid
+    INNER JOIN pg_attribute a
+        ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
+    INNER JOIN pg_namespace n
+        ON n.oid = t.relnamespace
+WHERE LOWER(n.nspname) NOT IN ('pg_catalog', 'information_schema')
+      AND LOWER(t.relname) NOT IN ('edmmetadata', '__migrationhistory', '__efmigrationshistory', '__refactorlog')
+      AND ix.indcheckxmin = false
+      AND ix.indisvalid = true
+ORDER BY t.relname, i.relname;";
         }
 
         public override bool CanReadStoredProcedures()
         {
-            return false;
+            return true;
         }
 
         protected override string StoredProcedureSQL()
         {
-            return string.Empty;
+            return @"
+SELECT R.specific_schema AS ""SPECIFIC_SCHEMA"",
+       R.routine_name AS ""SPECIFIC_NAME"",
+       R.routine_type AS ""ROUTINE_TYPE"",
+       R.data_type AS ""RETURN_DATA_TYPE"",
+       P.ordinal_position AS ""ORDINAL_POSITION"",
+       P.parameter_mode AS ""PARAMETER_MODE"",
+       P.parameter_name AS ""PARAMETER_NAME"",
+       P.data_type AS ""DATA_TYPE"",
+       COALESCE(P.character_maximum_length, 0) AS ""CHARACTER_MAXIMUM_LENGTH"",
+       COALESCE(P.numeric_precision, 0) AS ""NUMERIC_PRECISION"",
+       COALESCE(P.numeric_scale, 0) AS ""NUMERIC_SCALE"",
+       COALESCE(P.datetime_precision, 0) AS ""DATETIME_PRECISION"",
+       CASE WHEN LOWER(P.udt_schema) <> 'pg_catalog' THEN P.udt_schema || '.' || P.udt_name ELSE P.udt_name END AS ""USER_DEFINED_TYPE""
+FROM information_schema.routines R
+    LEFT JOIN information_schema.parameters P
+          ON R.specific_schema = P.specific_schema
+             AND R.specific_name = P.specific_name
+WHERE LOWER(R.routine_schema) NOT IN ('pg_catalog', 'information_schema')
+      AND LOWER(R.routine_type) IN ('procedure','function')
+ORDER BY R.specific_schema, R.routine_name, R.routine_type;";
         }
 
         protected override string ReadDatabaseEditionSQL()
         {
-            return string.Empty;
+            return @"SELECT version() as ""Edition"", '' as ""EngineEdition"", '' as ""ProductVersion"";";
         }
 
         protected override string MultiContextSQL()
@@ -12597,7 +12873,7 @@ and limitations under the License.
 
         protected override string EnumSQL(string table, string nameField, string valueField)
         {
-            return string.Empty;
+            return string.Format(@"SELECT ""{0}"" as ""NameField"", ""{1}"" as ""ValueField"" FROM ""{2}"";", nameField, valueField, table);
         }
 
         protected override string SynonymTableSQLSetup()
@@ -12630,14 +12906,100 @@ and limitations under the License.
             return string.Empty;
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            return "public";
+        }
+
         protected override string SpecialQueryFlags()
         {
             return string.Empty;
         }
 
+        protected override bool HasTemporalTableSupport()
+        {
+            return false;
+        }
+
         public override void ReadStoredProcReturnObjects(List<StoredProcedure> procs)
         {
-            throw new System.NotImplementedException();
+            using (var sqlConnection = new SqlConnection(Settings.ConnectionString))
+            {
+                foreach (var sp in procs.Where(x => !x.IsScalarValuedFunction))
+                    ReadStoredProcReturnObject(sqlConnection, sp);
+            }
+        }
+
+        private void ReadStoredProcReturnObject(SqlConnection sqlConnection, StoredProcedure proc)
+        {
+            try
+            {
+                const string structured = "Structured";
+                var sb = new StringBuilder(255);
+                if (proc.IsTableValuedFunction)
+                {
+                    foreach (var param in proc.Parameters.Where(x => x.SqlDbType.Equals(structured, StringComparison.InvariantCultureIgnoreCase)))
+                    {
+                        sb.AppendLine(string.Format("DECLARE {0} {1};", param.Name, param.UserDefinedTypeName));
+                    }
+
+                    sb.Append(string.Format("SELECT * FROM [{0}].[{1}](", proc.Schema.DbName, proc.DbName));
+                    foreach (var param in proc.Parameters)
+                    {
+                        sb.Append(string.Format("{0}, ",
+                            param.SqlDbType.Equals(structured, StringComparison.InvariantCultureIgnoreCase)
+                                ? param.Name
+                                : "default"));
+                    }
+
+                    if (proc.Parameters.Count > 0)
+                        sb.Length -= 2;
+
+                    sb.AppendLine(") LIMIT 0;");
+                }
+                else
+                {
+                    foreach (var param in proc.Parameters)
+                    {
+                        sb.AppendLine(string.Format("DECLARE {0} {1};", param.Name,
+                            param.SqlDbType.Equals(structured, StringComparison.InvariantCultureIgnoreCase)
+                                ? param.UserDefinedTypeName
+                                : param.SqlDbType));
+                    }
+
+                    sb.Append(string.Format("exec {0}.\"{1}\" ", proc.Schema.DbName, proc.DbName));
+                    foreach (var param in proc.Parameters)
+                        sb.Append(string.Format("{0}, ", param.Name));
+
+                    if (proc.Parameters.Count > 0)
+                        sb.Length -= 2;
+
+                    sb.AppendLine(";");
+                }
+
+                var ds = new DataSet();
+                using (var sqlAdapter = new SqlDataAdapter(sb.ToString(), sqlConnection))
+                {
+                    if (sqlConnection.State != ConnectionState.Open)
+                        sqlConnection.Open();
+                    sqlAdapter.SelectCommand.ExecuteReader(CommandBehavior.SchemaOnly | CommandBehavior.KeyInfo);
+                    sqlConnection.Close();
+                    sqlAdapter.FillSchema(ds, SchemaType.Source, "MyTable");
+                }
+
+                // Tidy up parameters
+                foreach (var p in proc.Parameters)
+                    p.NameHumanCase = Regex.Replace(p.NameHumanCase, @"[^A-Za-z0-9@\s]*", string.Empty);
+
+                for (var count = 0; count < ds.Tables.Count; count++)
+                {
+                    proc.ReturnModels.Add(ds.Tables[count].Columns.Cast<DataColumn>().ToList());
+                }
+            }
+            catch (Exception)
+            {
+                // Stored procedure does not have a return type
+            }
         }
 
         public override void Init()
@@ -12679,6 +13041,7 @@ and limitations under the License.
         public readonly bool   IsNotEnforced;
 
         public bool HasUniqueConstraint; // Can also be changed later
+        //public byte SortOrder;
 
         public RawForeignKey(
             string constraintName, string parentName, string childName,
@@ -12992,9 +13355,19 @@ SELECT * FROM MultiContext.ForeignKey;";
             return string.Empty;
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            return "dbo";
+        }
+
         protected override string SpecialQueryFlags()
         {
             return string.Empty;
+        }
+
+        protected override bool HasTemporalTableSupport()
+        {
+            return false;
         }
 
         public override void ReadStoredProcReturnObjects(List<StoredProcedure> procs)
@@ -13098,7 +13471,7 @@ FROM
     INNER JOIN sys.all_columns AS sc ON sc.object_id = COALESCE( st.object_id, sv.object_id ) AND c.COLUMN_NAME = sc.[name]
 
 WHERE
-    c.TABLE_NAME NOT IN ('EdmMetadata', '__MigrationHistory', '__RefactorLog', 'sysdiagrams')
+    c.TABLE_NAME NOT IN ('EdmMetadata', '__MigrationHistory', '__EFMigrationsHistory', '__RefactorLog', 'sysdiagrams')
 
 
 CREATE NONCLUSTERED INDEX IX_EfPoco_Columns
@@ -13964,6 +14337,11 @@ SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, RETURN_DATA_TYPE, ORDINAL_P
     , CHARACTER_MAXIMUM_LENGTH, NUMERIC_PRECISION, NUMERIC_SCALE, DATETIME_PRECISION, USER_DEFINED_TYPE FROM #SynonymStoredProcedureDetails";
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            return "dbo";
+        }
+
         protected override string SpecialQueryFlags()
         {
             if (Settings.IncludeQueryTraceOn9481Flag)
@@ -13971,6 +14349,11 @@ SELECT SPECIFIC_SCHEMA, SPECIFIC_NAME, ROUTINE_TYPE, RETURN_DATA_TYPE, ORDINAL_P
 OPTION (QUERYTRACEON 9481)";
 
             return string.Empty;
+        }
+
+        protected override bool HasTemporalTableSupport()
+        {
+            return DatabaseProductMajorVersion >= 13;
         }
 
         protected override string ReadDatabaseEditionSQL()
@@ -14990,6 +15373,7 @@ SELECT  SERVERPROPERTY('Edition') AS Edition,
         public string StoredProcModelBuilderPostCommand                      { get; set; }
         public bool OnConfigurationUsesConfiguration                         { get; set; }
         public bool OnConfigurationUsesConnectionString                      { get; set; }
+        public string DefaultSchema                                          { get; set; }
     }
     public class FactoryModel
     {
@@ -15460,7 +15844,7 @@ using {{this}};{{#newline}}
         base.OnModelCreating(modelBuilder);{{#newline}}
 {{#if hasTableValuedFunctions}}
 {{#newline}}
-        modelBuilder.Conventions.Add(new CodeFirstStoreFunctions.FunctionsConvention<{{DbContextName}}>(""dbo""));{{#newline}}
+        modelBuilder.Conventions.Add(new CodeFirstStoreFunctions.FunctionsConvention<{{DbContextName}}>(""{{DefaultSchema}}""));{{#newline}}
 {{#if hasTableValuedFunctionComplexTypes}}
 {{#newline}}
 {{#each tableValuedFunctionComplexTypes}}
@@ -15478,7 +15862,7 @@ using {{this}};{{#newline}}
 
 {{#if hasIndexes}}
 {{#newline}}
-        // Indexes
+        // Indexes{{#newline}}
 {{#each indexes}}
         {{this}}{{#newline}}
 {{/each}}

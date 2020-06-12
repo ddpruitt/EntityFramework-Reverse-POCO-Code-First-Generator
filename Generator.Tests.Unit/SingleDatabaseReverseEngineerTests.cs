@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.Diagnostics;
 using System.IO;
 using Efrpg;
@@ -28,6 +29,11 @@ namespace Generator.Tests.Unit
             Settings.Enumerations               = null;
             Settings.PrependSchemaName          = true;
             Settings.DisableGeographyTypes      = false;
+            Settings.AddUnitTestingDbContext    = true;
+
+            FilterSettings.Reset();
+            FilterSettings.AddDefaults();
+            FilterSettings.CheckSettings();
         }
 
         public void SetupSqlCe(string database, string connectionStringName, string dbContextName, TemplateType templateType, GeneratorType generatorType)
@@ -43,16 +49,37 @@ namespace Generator.Tests.Unit
             Settings.Enumerations               = null;
             Settings.PrependSchemaName          = true;
             Settings.DisableGeographyTypes      = false;
+            Settings.AddUnitTestingDbContext    = true;
+
+            FilterSettings.Reset();
+            FilterSettings.AddDefaults();
+            FilterSettings.CheckSettings();
+        }
+
+        public void SetupPostgreSQL(string database, string connectionStringName, string dbContextName, TemplateType templateType, GeneratorType generatorType)
+        {
+            Settings.TemplateType               = templateType;
+            Settings.GeneratorType              = generatorType;
+            Settings.ConnectionString           = $"Server=127.0.0.1;Port=5432;Database={database};User Id=testuser;Password=testtesttest;";
+            Settings.DatabaseType               = DatabaseType.PostgreSQL;
+            Settings.ConnectionStringName       = connectionStringName;
+            Settings.DbContextName              = dbContextName;
+            Settings.GenerateSingleDbContext    = true;
+            Settings.MultiContextSettingsPlugin = null;
+            Settings.Enumerations               = null;
+            Settings.PrependSchemaName          = true;
+            Settings.DisableGeographyTypes      = false;
+            Settings.AddUnitTestingDbContext    = true;
+
+            FilterSettings.Reset();
+            FilterSettings.AddDefaults();
+            FilterSettings.CheckSettings();
         }
 
         public void Run(string filename, string singleDbContextSubNamespace, Type fileManagerType, string subFolder)
         {
             Inflector.PluralisationService   = new EnglishPluralizationService();
             Settings.GenerateSingleDbContext = true;
-
-            FilterSettings.Reset();
-            FilterSettings.AddDefaults();
-            FilterSettings.CheckSettings();
 
             var path = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
             if (!string.IsNullOrEmpty(subFolder))
@@ -74,7 +101,11 @@ namespace Generator.Tests.Unit
             var generator      = GeneratorFactory.Create(fileManagement, fileManagerType, singleDbContextSubNamespace);
 
             // Turn on everything for testing
-            foreach (var filter in generator.FilterList.GetFilters())
+            Assert.IsNotNull(generator);
+            Assert.IsNotNull(generator.FilterList);
+            var filters = generator.FilterList.GetFilters();
+            Assert.IsNotNull(filters);
+            foreach (var filter in filters)
             {
                 filter.Value.IncludeViews                 = true;
                 filter.Value.IncludeSynonyms              = true;
@@ -116,6 +147,7 @@ namespace Generator.Tests.Unit
         [TestCase("EfrpgTestLarge", ".V3TestC", "MyLargeDbContext", "EfrpgTestLargeDbContext", false, TemplateType.Ef6)]
         [TestCase("fred",           ".V3TestD", "fred",             "FredDbContext",           false, TemplateType.Ef6)]
         [TestCase("Northwind",      ".V3TestE", "MyDbContext",      "MyDbContext",             true,  TemplateType.EfCore2)]
+        [TestCase("Northwind",      ".V3TestK", "MyDbContext",      "MyDbContext",             true,  TemplateType.EfCore3)]
         [TestCase("EfrpgTest",      ".V3TestF", "MyDbContext",      "EfrpgTestDbContext",      false, TemplateType.EfCore2)]
         [TestCase("EfrpgTest",      ".V3TestG", "MyDbContext",      "EfrpgTestDbContext",      false, TemplateType.EfCore3)] // ef core 3
         [TestCase("EfrpgTestLarge", ".V3TestH", "MyLargeDbContext", "EfrpgTestLargeDbContext", false, TemplateType.EfCore2)]
@@ -199,6 +231,69 @@ namespace Generator.Tests.Unit
                 CompareAgainstFolderTestComparison(subFolder);
             else
                 CompareAgainstTestComparison(filename, true);
+        }
+
+        [Test, NonParallelizable]
+        public void ReverseEngineerPostgreSQL()
+        {
+            // Arrange
+            Settings.GenerateSeparateFiles = false;
+            Settings.UseMappingTables = false;
+            SetupPostgreSQL("Northwind", "MyDbContext", "MyDbContext", TemplateType.EfCore3, GeneratorType.EfCore);
+
+            // Act
+            var filename = "Northwind";
+            Run(filename, ".PostgreSQL", typeof(CustomFileManager), null);
+
+            // Assert
+            CompareAgainstTestComparison(filename, true);
+        }
+
+        [Test, NonParallelizable]
+        [TestCase("fred", ".V3FilterTest1", "fred", "FredDbContext", false, TemplateType.EfCore3)] // ef core 3
+        public void MultipleIncludeFilters(string database, string singleDbContextSubNamespace, string connectionStringName, string dbContextName, bool publicTestComparison, TemplateType templateType)
+        {
+            // Arrange
+            Settings.GenerateSeparateFiles = false;
+            Settings.UseMappingTables = (templateType != TemplateType.EfCore2 && templateType != TemplateType.EfCore3);
+            SetupSqlServer(database, connectionStringName, dbContextName, templateType, templateType == TemplateType.Ef6 ? GeneratorType.Ef6 : GeneratorType.EfCore);
+            Settings.AddUnitTestingDbContext = false;
+            
+            FilterSettings.SchemaFilters.Add(new RegexIncludeFilter("dbo.*"));
+            FilterSettings.SchemaFilters.Add(new RegexIncludeFilter("Beta.*"));
+            
+            FilterSettings.TableFilters.Add(new RegexIncludeFilter("^[Cc]ar.*"));
+            FilterSettings.TableFilters.Add(new RegexIncludeFilter("Rebel.*"));
+            FilterSettings.TableFilters.Add(new RegexIncludeFilter("Harish.*"));
+
+            // Act
+            var filename = database + "IncludeFilter";
+            Run(filename, singleDbContextSubNamespace, typeof(NullFileManager), null);
+
+            // Assert
+            CompareAgainstTestComparison(filename, publicTestComparison);
+        }
+
+        [Test]
+        public void CheckPostgreSQLConnection()
+        {
+            var factory = DbProviderFactories.GetFactory("Npgsql");
+            Assert.IsNotNull(factory);
+
+            using (var conn = factory.CreateConnection())
+            {
+                Assert.IsNotNull(conn);
+                conn.ConnectionString = "Server=127.0.0.1;Port=5432;Database=Northwind;User Id=testuser;Password=testtesttest;";
+                conn.Open();
+
+                var cmd = conn.CreateCommand();
+                Assert.IsNotNull(cmd);
+
+                cmd.CommandText = "select count(*) from products";
+                var result = cmd.ExecuteScalar();
+                Assert.IsNotNull(result);
+                Assert.IsTrue((long)result > 1);
+            }
         }
 
         private static void CompareAgainstFolderTestComparison(string subFolder)

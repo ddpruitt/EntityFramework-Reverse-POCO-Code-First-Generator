@@ -212,9 +212,19 @@ SELECT * FROM MultiContext.ForeignKey;";
             return string.Empty;
         }
 
+        protected override string DefaultSchema(DbConnection conn)
+        {
+            return "dbo";
+        }
+
         protected override string SpecialQueryFlags()
         {
             return string.Empty;
+        }
+
+        protected override bool HasTemporalTableSupport()
+        {
+            return false;
         }
 
         public override void ReadStoredProcReturnObjects(List<StoredProcedure> procs)

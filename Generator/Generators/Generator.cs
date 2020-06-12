@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Data.Common;
 using System.IO;
 using System.Linq;
@@ -108,6 +109,13 @@ namespace Efrpg.Generators
                 _fileManagementService.Error(string.Empty);
                 _fileManagementService.Error("// ------------------------------------------------------------------------------------------------");
                 _fileManagementService.Error(string.Format("// WARNING: Failed to load provider \"{0}\" - {1}", providerName, error));
+                _fileManagementService.Error("// Allowed providers:");
+                foreach (DataRow fc in DbProviderFactories.GetFactoryClasses().Rows)
+                {
+                    var s = string.Format("//    \"{0}\"", fc[2]);
+                    _fileManagementService.Error(s);
+                }
+                _fileManagementService.Error(string.Empty);
                 _fileManagementService.Error("/*" + x.StackTrace + "*/");
                 _fileManagementService.Error("// ------------------------------------------------------------------------------------------------");
                 _fileManagementService.Error(string.Empty);
@@ -305,7 +313,7 @@ namespace Efrpg.Generators
                     var singularCleanTableName = Inflector.MakeSingular(DatabaseReader.CleanUp(tableName));
                     table.NameHumanCase = (Settings.UsePascalCase ? Inflector.ToTitleCase(singularCleanTableName) : singularCleanTableName).Replace(" ", "").Replace("$", "").Replace(".", "");
 
-                    if (Settings.PrependSchemaName && string.Compare(table.Schema.DbName, "dbo", StringComparison.OrdinalIgnoreCase) != 0)
+                    if (Settings.PrependSchemaName && string.Compare(table.Schema.DbName, Settings.DefaultSchema, StringComparison.OrdinalIgnoreCase) != 0)
                         table.NameHumanCase = table.Schema.DbName + "_" + table.NameHumanCase;
 
                     if (filter.IsExcluded(table)) // Retest exclusion after table rename
@@ -463,12 +471,14 @@ namespace Efrpg.Generators
 
             if (rawForeignKeys == null)
                 rawForeignKeys = new List<RawForeignKey>();
+            //else
+                //SortForeignKeys(rawForeignKeys);
 
             foreach (var filterKeyValuePair in FilterList.GetFilters())
             {
                 var filter = filterKeyValuePair.Value;
                 var fks = new List<RawForeignKey>();
-                fks.AddRange(rawForeignKeys);
+                fks.AddRange(rawForeignKeys/*.OrderBy(x => x.SortOrder).ThenBy(x => x.FkTableName).ThenBy(x => x.PkTableName)*/);
 
                 if (!Settings.GenerateSingleDbContext)
                 {
@@ -522,6 +532,38 @@ namespace Efrpg.Generators
                     filter.Tables.IdentifyMappingTables(foreignKeys, false, DatabaseReader.IncludeSchema);
             }
         }
+
+        /*private void SortForeignKeys(List<RawForeignKey> rawForeignKeys)
+        {
+            foreach (var fk in rawForeignKeys)
+            {
+                fk.SortOrder = 10;
+                
+                var fkColumn = fk.FkColumn.ToLowerInvariant();
+                var pkTable = fk.PkTableName.ToLowerInvariant();
+                
+                // Matches exactly
+                if (fkColumn == pkTable)
+                {
+                    fk.SortOrder = 1;
+                    continue;
+                }
+
+                // Matches without 'id'
+                if(fkColumn.EndsWith("id") && fkColumn.Remove(fkColumn.Length - 2, 2) == pkTable)
+                {
+                    fk.SortOrder = 2;
+                    continue;
+                }
+
+                // Matches if trimmed
+                if(fkColumn.Length > pkTable.Length && fkColumn.Substring(0, pkTable.Length) == pkTable)
+                {
+                    fk.SortOrder = 3;
+                    continue;
+                }
+            }
+        }*/
 
         private void AddExtendedPropertiesToFilters(List<RawExtendedProperty> extendedProperties)
         {
@@ -636,7 +678,7 @@ namespace Efrpg.Generators
                         IsStoredProcedure      = proc.IsStoredProcedure
                     };
                     sp.NameHumanCase = DatabaseReader.CleanUp(sp.NameHumanCase);
-                    if (Settings.PrependSchemaName && (string.Compare(proc.Schema, "dbo", StringComparison.OrdinalIgnoreCase) != 0))
+                    if (Settings.PrependSchemaName && (string.Compare(proc.Schema, Settings.DefaultSchema, StringComparison.OrdinalIgnoreCase) != 0))
                         sp.NameHumanCase = proc.Schema + "_" + sp.NameHumanCase;
 
                     sp.Parameters.AddRange(rawStoredProcs

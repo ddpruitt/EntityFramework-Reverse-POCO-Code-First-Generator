@@ -282,7 +282,7 @@ using {{this}};{{#newline}}
         base.OnModelCreating(modelBuilder);{{#newline}}
 {{#if hasTableValuedFunctions}}
 {{#newline}}
-        modelBuilder.Conventions.Add(new CodeFirstStoreFunctions.FunctionsConvention<{{DbContextName}}>(""dbo""));{{#newline}}
+        modelBuilder.Conventions.Add(new CodeFirstStoreFunctions.FunctionsConvention<{{DbContextName}}>(""{{DefaultSchema}}""));{{#newline}}
 {{#if hasTableValuedFunctionComplexTypes}}
 {{#newline}}
 {{#each tableValuedFunctionComplexTypes}}
@@ -300,7 +300,7 @@ using {{this}};{{#newline}}
 
 {{#if hasIndexes}}
 {{#newline}}
-        // Indexes
+        // Indexes{{#newline}}
 {{#each indexes}}
         {{this}}{{#newline}}
 {{/each}}

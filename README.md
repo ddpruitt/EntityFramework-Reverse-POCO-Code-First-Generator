@@ -5,8 +5,13 @@
 * Watch the v2 in-depth course at [pluralsight](https://app.pluralsight.com/library/courses/code-first-entity-framework-legacy-databases/table-of-contents) ![logo](http://www.simonhughes.co.uk/pluralsight-logo-tiny.png) I cover everything the v2 generator can do, and show you step-by-step how to reverse engineer your database properly.
 * A v3 course will be coming in 2020.
 
+### Watch a short video clip (no audio)
+[efcore-first-run.mp4](https://reversepocostorage.blob.core.windows.net/public-file-share/efcore-first-run.mp4)
+
 ### You will need a licence key
-Go to the [ReversePOCO](https://www.reversepoco.co.uk) website to obtain/purchase your licence key.
+Free to academics (you need a .edu or a .ac email address), not free for commercial use.
+
+Go to the [ReversePOCO](https://www.reversepoco.co.uk) website to obtain your licence key.
 
 ### Upgrading v2 to v3
 Please read the [Upgrading documentation](https://github.com/sjh37/EntityFramework-Reverse-POCO-Code-First-Generator/wiki/Upgrading-from-v2-to-v3)
